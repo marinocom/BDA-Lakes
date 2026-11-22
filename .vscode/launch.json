@@ -1,0 +1,40 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run notebook 05 (results)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/run_extended.py",
+      "cwd": "${workspaceFolder}",
+      "python": "/Users/marino/miniconda3/envs/collegeEnv/bin/python",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "subProcess": false,
+      "env": {
+        "PATH": "/Users/marino/miniconda3/envs/collegeEnv/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin:${env:PATH}",
+        "CONDA_PREFIX": "/Users/marino/miniconda3/envs/collegeEnv",
+        "CONDA_DEFAULT_ENV": "collegeEnv"
+      },
+      "args": [
+        "nb05"
+      ]
+    },
+    {
+      "name": "Run all model fits (run_extended.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/run_extended.py",
+      "cwd": "${workspaceFolder}",
+      "python": "/Users/marino/miniconda3/envs/collegeEnv/bin/python",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "subProcess": false,
+      "env": {
+        "PATH": "/Users/marino/miniconda3/envs/collegeEnv/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin:${env:PATH}",
+        "CONDA_PREFIX": "/Users/marino/miniconda3/envs/collegeEnv",
+        "CONDA_DEFAULT_ENV": "collegeEnv"
+      }
+    }
+  ]
+}

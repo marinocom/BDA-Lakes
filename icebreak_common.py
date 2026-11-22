@@ -3,10 +3,30 @@
 All three notebooks import this file, so the data subset, predictors and
 priors only need to be defined once.
 """
+import platform
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+# PyTensor adds the linker flag "-ld64" on macOS 15 and newer. The current Xcode linker
+# no longer knows that flag ("ld: library 'd64' not found"), so every model fails to
+# compile. Reporting macOS 14 to PyTensor's check makes it leave the flag out.
+if sys.platform == "darwin" and not getattr(platform.mac_ver, "_bda_patched", False):
+    _real_mac_ver = platform.mac_ver
+
+    def _mac_ver(*args, **kwargs):
+        release, info, machine = _real_mac_ver(*args, **kwargs)
+        try:
+            if int(release.split(".")[0]) >= 15:
+                release = "14.0"
+        except ValueError:
+            pass
+        return release, info, machine
+
+    _mac_ver._bda_patched = True
+    platform.mac_ver = _mac_ver
 
 # -- paths
 ROOT = Path(__file__).resolve().parent
@@ -28,6 +48,17 @@ REGION_LABELS = ["south", "central", "north"]
 
 RESPONSE = "breakup_doy"
 
+ALT_CENTER = 100.0   # m; altitude is used as (altitude - 100 m) / 100 m
+ALT_SCALE = 100.0
+LOGAREA_CENTER = 3.94   # median log(km2) of the reliable-lake subset (about 51 km2)
+DEPTH_CENTER = 6.3      # m, median mean depth of the reliable-lake subset
+DEPTH_SCALE = 5.0       # depth is used per 5 m
+
+# train/test split (notebook 05)
+SPLIT_YEAR = 2010       # training seasons <= 2010, test seasons 2011-2026
+N_TEST_SITES = {"south": 5, "central": 5, "north": 2}   # lakes held out completely
+SPLIT_SEED = 2026
+
 
 def load_breakup(recent_only: bool = True, path=DATA_FILE) -> pd.DataFrame:
     """Rows with a valid break-up date (SYKE code 28), ready for modelling.
@@ -47,7 +78,42 @@ def load_breakup(recent_only: bool = True, path=DATA_FILE) -> pd.DataFrame:
     d["post1980"] = np.clip(d["season"] - BREAK_YEAR, 0, None) / 10.0
     d["region"] = pd.cut(d["lat"], REGION_CUTS, labels=REGION_LABELS).astype(str)
     d["season_region"] = d["season_f"] + "_" + d["region"]
+    d["alt_c"] = (d["lake_altitude_m"] - ALT_CENTER) / ALT_SCALE
+    d["logarea_c"] = d["log_lake_area"] - LOGAREA_CENTER
+    d["depth_c"] = (d["lake_mean_depth_m"] - DEPTH_CENTER) / DEPTH_SCALE
     return d.reset_index(drop=True)
+
+
+def reliable_lake_subset(d: pd.DataFrame) -> pd.DataFrame:
+    """Sites whose lake match is certain and that have area and mean depth (53 sites)."""
+    ok = (~d["lake_info_uncertain"]) & d["log_lake_area"].notna() & d["lake_mean_depth_m"].notna()
+    return d[ok].reset_index(drop=True)
+
+
+def test_sites(d: pd.DataFrame) -> list:
+    """Lakes held out completely for testing, drawn at random within each region."""
+    rng = np.random.default_rng(SPLIT_SEED)
+    sites = d.groupby("site")["region"].first()
+    out = []
+    for reg, n in N_TEST_SITES.items():
+        cand = np.sort(sites[sites == reg].index.to_numpy())
+        out += list(rng.choice(cand, size=n, replace=False))
+    return sorted(out)
+
+
+def make_split(d: pd.DataFrame) -> dict:
+    """Training data and the three test sets.
+
+    train   : training lakes, seasons <= SPLIT_YEAR
+    A_future: training lakes, later seasons      (known lakes, unseen years)
+    B_lakes : held-out lakes, seasons <= SPLIT_YEAR (unseen lakes, known years)
+    C_both  : held-out lakes, later seasons      (unseen lakes and years, as in the app)
+    """
+    held = d["site"].isin(test_sites(d))
+    late = d["season"] > SPLIT_YEAR
+    parts = {"train": d[~held & ~late], "A_future": d[~held & late],
+             "B_lakes": d[held & ~late], "C_both": d[held & late]}
+    return {k: v.reset_index(drop=True) for k, v in parts.items()}
 
 
 # -- models
@@ -67,6 +133,15 @@ FORMULAS = {
         "breakup_doy ~ lat_c + lon_c + decade_c + post1980 + lat_c:decade_c"
         " + (1 + decade_c | site) + (1 | season_f) + (1 | season_region)"
     ),
+    "M4_altitude": (
+        "breakup_doy ~ lat_c + lon_c + alt_c + decade_c + post1980 + lat_c:decade_c"
+        " + (1 + decade_c | site) + (1 | season_f) + (1 | season_region)"
+    ),
+    # fitted only on the 53 sites with reliable lake data (reliable_lake_subset)
+    "M5_lake_size": (
+        "breakup_doy ~ lat_c + lon_c + alt_c + logarea_c + depth_c + decade_c + post1980"
+        " + lat_c:decade_c + (1 + decade_c | site) + (1 | season_f) + (1 | season_region)"
+    ),
 }
 
 # Priors on the day-of-year scale. Notebook 02 explains the choices.
@@ -78,6 +153,9 @@ PRIOR_SPEC = {
     "decade_c":       ("Normal", 0.0, 2.0),      # days per decade (pre-1980 slope in M2/M3)
     "post1980":       ("Normal", 0.0, 3.0),      # change in slope after 1980, days per decade
     "lat_c:decade_c": ("Normal", 0.0, 0.5),      # trend difference per degree latitude
+    "alt_c":          ("Normal", 0.0, 5.0),      # days per 100 m of altitude
+    "logarea_c":      ("Normal", 0.0, 3.0),      # days per e-fold (x2.7) of lake area
+    "depth_c":        ("Normal", 0.0, 3.0),      # days per 5 m of mean depth
     "1|site":         ("HalfNormal", None, 10.0),   # sd of lake intercepts (days)
     "decade_c|site":  ("HalfNormal", None, 1.0),    # sd of lake-specific trends (days/decade)
     "1|season_f":     ("HalfNormal", None, 10.0),   # sd of nationwide year shocks (days)
